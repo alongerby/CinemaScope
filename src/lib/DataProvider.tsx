@@ -16,8 +16,9 @@ const SLOW_LOAD_THRESHOLD_MS = 5000;
  * variable — every page reads it from this context instead of fetching its
  * own data, so switching tabs is instant and a given tab never re-fetches
  * until it's fully reloaded. The one-time fetch itself still costs whatever
- * the first real ingestion takes; after that, /api/dataset is served from
- * the server's own 24h cache, so re-opening a new tab is fast too.
+ * the first real ingestion takes; after that, each provider's own fetch
+ * cache (see src/lib/providers/*) keeps things fast, so re-opening a new tab
+ * — or a cold serverless instance handling it — is fast too.
  */
 
 export interface AppData {

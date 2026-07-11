@@ -1,4 +1,4 @@
-import type { CinemaDataProvider } from "@/lib/providers/provider";
+import type { CinemaDataProvider, FetchDatasetOptions } from "@/lib/providers/provider";
 import { buildImportResult, emptyDataset } from "@/lib/providers/provider";
 import { QuickbookProvider, RAV_HEN_CONFIG, YES_PLANET_CONFIG } from "@/lib/providers/quickbookProvider";
 import { CinemaCityProvider } from "@/lib/providers/cinemaCityProvider";
@@ -22,8 +22,7 @@ import type { Movie, NormalizedDataset, ProviderImportResult, Screening, Theater
  *   45  Hot Cinema  (/tickets/movieevents)
  *
  * There is no demo/fabricated fallback: if a source is unreachable the app
- * shows real data from the others (and the last good snapshot persists on
- * disk), never invented theaters or showtimes.
+ * shows real data from the others, never invented theaters or showtimes.
  */
 function buildProviderRegistry(): CinemaDataProvider[] {
   return [
@@ -87,7 +86,7 @@ function fillMovieGaps(existing: Movie, incoming: Movie): void {
   if (!existing.ageRating && incoming.ageRating) existing.ageRating = incoming.ageRating;
 }
 
-export async function runIngestion(): Promise<IngestionRunOutcome> {
+export async function runIngestion(options?: FetchDatasetOptions): Promise<IngestionRunOutcome> {
   const providers = buildProviderRegistry();
   const merged: NormalizedDataset = emptyDataset();
   const results: ProviderImportResult[] = [];
@@ -111,7 +110,7 @@ export async function runIngestion(): Promise<IngestionRunOutcome> {
     }
 
     try {
-      const outcome = await withTimeout(provider.fetchDataset(), PROVIDER_TIMEOUT_MS, provider.name);
+      const outcome = await withTimeout(provider.fetchDataset(options), PROVIDER_TIMEOUT_MS, provider.name);
 
       const validMovies: Movie[] = [];
       for (const movie of outcome.dataset.movies) {

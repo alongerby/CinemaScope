@@ -1,6 +1,6 @@
 import { movieKey, stripPrintSuffix } from "@/lib/movieKey";
 import type { AudioTrack, Movie, PrintKind, ScreenFormat, Screening, SubtitleTrack, Theater } from "@/lib/types";
-import type { CinemaDataProvider, ProviderFetchOutcome } from "./provider";
+import type { CinemaDataProvider, FetchDatasetOptions, ProviderFetchOutcome } from "./provider";
 import { emptyDataset } from "./provider";
 
 /**
@@ -75,7 +75,7 @@ interface RawGroup {
 // `revalidateMs` uses Next.js's own fetch-level Data Cache (via the `next.revalidate`
 // option) instead of a hand-rolled cache — it's persisted by the platform (Vercel)
 // across serverless invocations for free, with no extra service to provision.
-async function fetchJson<T>(url: string, revalidateMs: number): Promise<T> {
+async function fetchJson<T>(url: string, revalidateMs: number, forceFresh?: boolean): Promise<T> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
@@ -87,7 +87,7 @@ async function fetchJson<T>(url: string, revalidateMs: number): Promise<T> {
         "Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
         Referer: `${HOST}/`,
       },
-      next: { revalidate: Math.round(revalidateMs / 1000) },
+      ...(forceFresh ? { cache: "no-store" as const } : { next: { revalidate: Math.round(revalidateMs / 1000) } }),
     });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return (await res.json()) as T;
@@ -135,13 +135,14 @@ export class HotCinemaProvider implements CinemaDataProvider {
     return true;
   }
 
-  async fetchDataset(): Promise<ProviderFetchOutcome> {
+  async fetchDataset(options?: FetchDatasetOptions): Promise<ProviderFetchOutcome> {
+    const forceFresh = options?.forceFresh;
     const warnings: string[] = [];
     const errors: string[] = [];
 
     let rawMovies: RawMovie[];
     try {
-      rawMovies = await fetchJson<RawMovie[]>(`${HOST}/tickets/Movies`, MOVIES_CACHE_TTL_MS);
+      rawMovies = await fetchJson<RawMovie[]>(`${HOST}/tickets/Movies`, MOVIES_CACHE_TTL_MS, forceFresh);
     } catch (err) {
       errors.push(`Hot Cinema: failed to fetch movie list (${err instanceof Error ? err.message : String(err)}).`);
       return { dataset: emptyDataset(), warnings, errors };
@@ -151,7 +152,7 @@ export class HotCinemaProvider implements CinemaDataProvider {
 
     const perMovie = await pool(rawMovies, CONCURRENCY, async (movie) => {
       try {
-        const groups = await fetchJson<RawGroup[]>(`${HOST}/tickets/movieevents?movieid=${movie.MovieId}`, EVENTS_CACHE_TTL_MS);
+        const groups = await fetchJson<RawGroup[]>(`${HOST}/tickets/movieevents?movieid=${movie.MovieId}`, EVENTS_CACHE_TTL_MS, forceFresh);
         return { movie, groups };
       } catch {
         return { movie, groups: [] as RawGroup[] };

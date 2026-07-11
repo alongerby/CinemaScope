@@ -1,5 +1,4 @@
 import { runIngestion } from "@/lib/ingestion";
-import { getCached, setCached } from "@/lib/cache";
 import { todayInIsrael } from "@/lib/datetime";
 import type { Movie, NormalizedDataset, ProviderImportResult, Screening, Theater } from "@/lib/types";
 
@@ -7,67 +6,36 @@ export type { SearchFilters } from "@/lib/searchFilters";
 export { applyFilters, sortByTime } from "@/lib/searchFilters";
 
 /**
- * Single in-memory data layer the whole app reads from, backed by a full
- * re-scrape/re-ingest cadence of once per day — matching the "daily scrape"
- * requirement rather than re-hitting live sources on every request. The
- * merged result is also persisted via `@/lib/cache` (Netlify Blobs in
- * production, a local `.cache/` file in dev) so a process restart — or, on
- * Netlify, the *next* serverless invocation, which is almost never the same
- * process — doesn't force an immediate re-scrape; it just picks up wherever
- * the last run left off. `/admin/import`'s "Refresh now" button and the
- * `/api/cron/refresh` route both bypass this TTL on demand — see
- * `src/instrumentation.ts` for the in-process scheduler that also calls it
- * automatically once a day while the server stays running (long-lived
- * processes only; a no-op on serverless).
+ * Single in-memory data layer the whole app reads from. The actual freshness
+ * guarantee — "re-scrape each chain every 6-12h, don't hammer it on every
+ * request" — lives in each provider's own `fetch()` calls, via Next.js's
+ * fetch-level Data Cache (see the `next: { revalidate }` option in each
+ * provider). That cache is what Vercel persists across serverless
+ * invocations; this module doesn't need its own persisted snapshot on top of
+ * it. What's here just avoids redoing the merge/dedupe pass (cheap, and
+ * hits no network if the underlying fetches are still within their
+ * revalidate window) on every single request within the same warm instance.
  */
 
-const INGESTION_TTL_MS = 1000 * 60 * 60 * 24;
-const SNAPSHOT_CACHE_KEY = "daily-ingestion-snapshot";
-
-interface Snapshot {
-  dataset: NormalizedDataset;
-  results: ProviderImportResult[];
-  validationWarnings: string[];
-  ingestedAt: number;
-}
+const REUSE_WINDOW_MS = 1000 * 60; // re-merge at most once a minute per warm instance
 
 let cachedDataset: NormalizedDataset | null = null;
 let lastResults: ProviderImportResult[] = [];
 let lastValidationWarnings: string[] = [];
 let lastIngestedAt: number | null = null;
 let inFlight: Promise<void> | null = null;
-let triedDiskLoad = false;
 
-async function loadSnapshotIfFresh(): Promise<boolean> {
-  if (triedDiskLoad) return false;
-  triedDiskLoad = true;
-  const snapshot = await getCached<Snapshot>(SNAPSHOT_CACHE_KEY, INGESTION_TTL_MS);
-  if (!snapshot) return false;
-  cachedDataset = snapshot.dataset;
-  lastResults = snapshot.results;
-  lastValidationWarnings = snapshot.validationWarnings;
-  lastIngestedAt = snapshot.ingestedAt;
-  return true;
-}
-
-async function ensureFresh(): Promise<void> {
-  if (!cachedDataset) await loadSnapshotIfFresh();
-
-  const stale = !cachedDataset || !lastIngestedAt || Date.now() - lastIngestedAt > INGESTION_TTL_MS;
-  if (!stale) return;
+async function ensureFresh(options?: { forceFresh?: boolean }): Promise<void> {
+  const stale = !cachedDataset || !lastIngestedAt || Date.now() - lastIngestedAt > REUSE_WINDOW_MS;
+  if (!stale && !options?.forceFresh) return;
   if (inFlight) return inFlight;
 
   inFlight = (async () => {
-    const outcome = await runIngestion();
+    const outcome = await runIngestion(options);
     cachedDataset = outcome.dataset;
     lastResults = outcome.results;
     lastValidationWarnings = outcome.validationWarnings;
     lastIngestedAt = Date.now();
-    await setCached<Snapshot>(
-      SNAPSHOT_CACHE_KEY,
-      { dataset: cachedDataset, results: lastResults, validationWarnings: lastValidationWarnings, ingestedAt: lastIngestedAt },
-      INGESTION_TTL_MS,
-    );
   })();
 
   try {
@@ -77,12 +45,9 @@ async function ensureFresh(): Promise<void> {
   }
 }
 
-/** Forces an immediate full re-ingestion, bypassing the daily TTL. Used by the admin "Refresh now" button and the cron route. */
+/** Forces an immediate full re-scrape, bypassing every provider's fetch cache too. Used by the admin "Refresh now" button and the cron route. */
 export async function forceRefresh() {
-  cachedDataset = null;
-  lastIngestedAt = null;
-  triedDiskLoad = true; // skip the snapshot on a forced refresh — we want a genuinely fresh run
-  await ensureFresh();
+  await ensureFresh({ forceFresh: true });
   return { results: lastResults, warnings: lastValidationWarnings, dataset: cachedDataset! };
 }
 

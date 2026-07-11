@@ -1,7 +1,7 @@
 import { cityIdByHebrewName, getCityById } from "@/lib/data/cities";
 import { movieKey } from "@/lib/movieKey";
 import type { AudioTrack, CinemaChainId, Movie, PrintKind, ScreenFormat, Screening, SubtitleTrack, Theater } from "@/lib/types";
-import type { CinemaDataProvider, ProviderFetchOutcome } from "./provider";
+import type { CinemaDataProvider, FetchDatasetOptions, ProviderFetchOutcome } from "./provider";
 import { emptyDataset } from "./provider";
 
 /**
@@ -172,14 +172,14 @@ export class QuickbookProvider implements CinemaDataProvider {
   // `revalidateMs` uses Next.js's own fetch-level Data Cache (via the `next.revalidate`
   // option) instead of a hand-rolled cache — it's persisted by the platform (Vercel)
   // across serverless invocations for free, with no extra service to provision.
-  private async fetchJson<T>(url: string, revalidateMs: number): Promise<T> {
+  private async fetchJson<T>(url: string, revalidateMs: number, forceFresh?: boolean): Promise<T> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
     try {
       const res = await fetch(url, {
         signal: controller.signal,
         headers: { Accept: "application/json", "User-Agent": USER_AGENT },
-        next: { revalidate: Math.round(revalidateMs / 1000) },
+        ...(forceFresh ? { cache: "no-store" as const } : { next: { revalidate: Math.round(revalidateMs / 1000) } }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return (await res.json()) as T;
@@ -188,7 +188,8 @@ export class QuickbookProvider implements CinemaDataProvider {
     }
   }
 
-  async fetchDataset(): Promise<ProviderFetchOutcome> {
+  async fetchDataset(options?: FetchDatasetOptions): Promise<ProviderFetchOutcome> {
+    const forceFresh = options?.forceFresh;
     const { chainId, chainName, apiBase, hebrewPrefixes } = this.cfg;
     const warnings: string[] = [];
     const errors: string[] = [];
@@ -199,6 +200,7 @@ export class QuickbookProvider implements CinemaDataProvider {
       const data = await this.fetchJson<{ body: { cinemas: RawCinema[] } }>(
         `${apiBase}/cinemas/with-event/until/${until}?attr=`,
         CINEMAS_CACHE_TTL_MS,
+        forceFresh,
       );
       cinemas = data.body.cinemas;
     } catch (err) {
@@ -243,6 +245,7 @@ export class QuickbookProvider implements CinemaDataProvider {
           data = await this.fetchJson<{ body: { films: RawFilm[]; events: RawEvent[] } }>(
             `${apiBase}/film-events/in-cinema/${cinema.id}/at-date/${date}?attr=`,
             SCHEDULE_CACHE_TTL_MS,
+            forceFresh,
           );
           await sleep(POLITE_DELAY_MS);
         } catch {

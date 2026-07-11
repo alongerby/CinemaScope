@@ -1,6 +1,6 @@
 import { movieKey, stripPrintSuffix } from "@/lib/movieKey";
 import type { AudioTrack, Movie, PrintKind, ScreenFormat, Screening, SubtitleTrack, Theater } from "@/lib/types";
-import type { CinemaDataProvider, ProviderFetchOutcome } from "./provider";
+import type { CinemaDataProvider, FetchDatasetOptions, ProviderFetchOutcome } from "./provider";
 import { emptyDataset } from "./provider";
 
 /**
@@ -98,7 +98,8 @@ export class MovielandProvider implements CinemaDataProvider {
     return true;
   }
 
-  async fetchDataset(): Promise<ProviderFetchOutcome> {
+  async fetchDataset(options?: FetchDatasetOptions): Promise<ProviderFetchOutcome> {
+    const forceFresh = options?.forceFresh;
     const warnings: string[] = [];
     const errors: string[] = [];
 
@@ -118,7 +119,7 @@ export class MovielandProvider implements CinemaDataProvider {
           // Next.js's own fetch-level Data Cache (persisted by the platform —
           // Vercel — across serverless invocations for free) instead of a
           // hand-rolled cache.
-          next: { revalidate: Math.round(EVENTS_CACHE_TTL_MS / 1000) },
+          ...(forceFresh ? { cache: "no-store" as const } : { next: { revalidate: Math.round(EVENTS_CACHE_TTL_MS / 1000) } }),
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         rawMovies = (await res.json()) as RawMovie[];
