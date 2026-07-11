@@ -10,7 +10,7 @@ Built with Next.js App Router, TypeScript, and Tailwind CSS. No paid APIs, no da
 npm install
 npm run dev
 ```
-
+r
 Open http://localhost:3000. That's it — no environment variables, no database setup, no API keys required. The first page load takes a few seconds longer than usual: it triggers the first data ingestion run, including a handful of real network calls to Rav-Hen's public site (see below). Every run after that is served from cache.
 
 ```bash
