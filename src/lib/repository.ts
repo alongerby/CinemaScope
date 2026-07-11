@@ -17,7 +17,7 @@ export { applyFilters, sortByTime } from "@/lib/searchFilters";
  * revalidate window) on every single request within the same warm instance.
  */
 
-const REUSE_WINDOW_MS = 1000 * 60; // re-merge at most once a minute per warm instance
+const REUSE_WINDOW_MS = 1000 * 60 * 10; // re-merge at most once per 10 minutes per warm instance
 
 let cachedDataset: NormalizedDataset | null = null;
 let lastResults: ProviderImportResult[] = [];

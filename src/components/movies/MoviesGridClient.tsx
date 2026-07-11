@@ -70,7 +70,12 @@ export function MoviesGridClient({ movies, theaters, screenings }: { movies: Mov
     // Alphabetical by displayed title — also keeps near-duplicate titles that
     // slipped past ingestion's merge (e.g. differing only by a trailing
     // qualifier) adjacent to each other instead of scattered across the grid.
-    return list.sort((a, b) => movieTitles(locale, a).primary.localeCompare(movieTitles(locale, b).primary, locale === "he" ? "he" : "en"));
+    // Posterless cards (no chain supplied an image for that film) sort after
+    // everything else, so the grid's visual rhythm isn't broken up by them.
+    return list.sort((a, b) => {
+      if (Boolean(a.posterUrl) !== Boolean(b.posterUrl)) return a.posterUrl ? -1 : 1;
+      return movieTitles(locale, a).primary.localeCompare(movieTitles(locale, b).primary, locale === "he" ? "he" : "en");
+    });
   }, [movies, query, matchingMovieIds, locale]);
 
   // Reset to page 1 whenever the filtered set changes shape.

@@ -68,10 +68,23 @@ Its events endpoint doesn't expose branch coordinates or a machine-readable city
 
 "Daily scrape" is a real cadence here, not a one-off:
 
-- `src/lib/repository.ts` runs the full ingestion pipeline (all providers, including the real Rav-Hen fetch) at most once per 24 hours, and **persists the merged result to `.cache/daily-ingestion-snapshot.json`** — a dev-server restart picks up the last snapshot instead of immediately re-scraping.
+- Each provider's own `fetch()` calls carry a `next: { revalidate }` option (6-12h, see `src/lib/providers/*`), so the actual freshness guarantee lives in Next.js's fetch-level Data Cache — persisted by the deployment platform (Vercel) across serverless invocations for free, no extra service to run or provision.
+- `src/lib/repository.ts` keeps a short in-memory re-use window on top of that, just to avoid redoing the (cheap) merge/dedupe pass on every request within the same warm instance.
 - `src/instrumentation.ts` starts an in-process hourly check when the server boots; if the last run is more than 24h old, it triggers a refresh automatically. This only helps while the server process stays alive (fine for `next start` on a persistent host, not for serverless).
 - `src/app/api/cron/refresh/route.ts` is the production-correct trigger: point any external scheduler at it once a day (`POST /api/cron/refresh`) — Windows Task Scheduler, cron, or a hosted scheduled job all work identically. Set `CRON_SECRET` in the environment to require `Authorization: Bearer <secret>` (or `?secret=`) before it'll run; unset by default so local use needs no configuration.
-- `/admin/import`'s "Refresh data now" button bypasses the daily TTL immediately, for on-demand testing.
+- `/admin/import`'s "Refresh data now" button bypasses the cache immediately (`forceFresh`, threaded through every provider), for on-demand testing.
+
+## Movieland mirror (working around a Cloudflare IP-reputation gate)
+
+Movieland's `/api/Events` sits behind a Cloudflare Managed Challenge that gates almost entirely on IP/ASN reputation — cloud hosting ranges (Vercel, Netlify, etc.) get challenged/blocked no matter what headers are sent, while a residential IP passes straight through untouched. No amount of header spoofing or proxy relaying fixes an IP-reputation gate, so instead: a residential machine mirrors the raw response to a GitHub Gist once a day, and the deployed site reads that mirror instead of talking to Movieland directly.
+
+Setup:
+1. Create a GitHub Personal Access Token with the `gist` scope ([github.com/settings/tokens](https://github.com/settings/tokens)).
+2. Create a Gist with one file `movieland-events.json` containing `[]` as a placeholder. Note its id from the URL.
+3. On the machine that'll run the daily scrape (e.g. your home PC via Windows Task Scheduler), set `MOVIELAND_GIST_ID` and `MOVIELAND_GIST_TOKEN`, then run `node scripts/scrapeMovieland.mjs` (schedule it once a day).
+4. On the deployment (Vercel), set `MOVIELAND_MIRROR_URL` to `https://gist.githubusercontent.com/<user>/<GIST_ID>/raw/movieland-events.json`.
+
+Without `MOVIELAND_MIRROR_URL` set, `movielandProvider.ts` just fetches Movieland directly (fine for local dev, where a residential IP isn't blocked anyway).
 
 ## Architecture
 

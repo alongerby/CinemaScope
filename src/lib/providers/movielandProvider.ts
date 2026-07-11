@@ -24,11 +24,35 @@ const EVENTS_CACHE_TTL_MS = 1000 * 60 * 60 * 6;
 // enough to include presale movies (tickets already on sale for a release
 // date weeks out, e.g. a new Spider-Man opening in ~3 weeks).
 const DAY_WINDOW = 35;
-// A plain browser UA, not a self-identifying bot string — needed because this
-// endpoint 403s server-to-server requests from some cloud hosting IP ranges
-// (observed on Netlify) that a residential/dev-machine IP isn't blocked on.
+// A full modern-Chrome fingerprint, not a self-identifying bot string —
+// needed because this endpoint 403s server-to-server requests from some cloud
+// hosting IP ranges (observed on both Netlify and Vercel) that a
+// residential/dev-machine IP isn't blocked on.
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+const BROWSER_HEADERS: Record<string, string> = {
+  Accept: "application/json, text/plain, */*",
+  "User-Agent": USER_AGENT,
+  "Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
+  Referer: `${HOST}/`,
+  Origin: HOST,
+  "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+  "sec-ch-ua-mobile": "?0",
+  "sec-ch-ua-platform": '"Windows"',
+  "sec-fetch-dest": "empty",
+  "sec-fetch-mode": "cors",
+  "sec-fetch-site": "same-origin",
+};
+// This endpoint sits behind a Cloudflare Managed Challenge that gates almost
+// entirely on IP/ASN reputation: cloud hosting ranges (observed on both
+// Netlify and Vercel) get challenged/blocked regardless of headers, while a
+// residential IP (e.g. a home machine running scripts/scrapeMovieland.mjs on
+// a schedule) sails through untouched. No header spoofing or proxy relay
+// fixes an IP-reputation gate — so instead, a residential machine mirrors the
+// raw response to a GitHub Gist once a day, and production reads that mirror
+// instead of talking to Movieland directly. See scripts/scrapeMovieland.mjs
+// and README "Movieland mirror" for the setup.
+const MIRROR_URL = process.env.MOVIELAND_MIRROR_URL;
 
 interface Branch {
   nameEn: string;
@@ -88,6 +112,59 @@ function normalizeRating(raw: string | number | null | undefined): string {
   return "";
 }
 
+async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function cacheInit(forceFresh: boolean | undefined, revalidateMs: number): RequestInit {
+  // Next.js's own fetch-level Data Cache (persisted by the platform — Vercel —
+  // across serverless invocations for free) instead of a hand-rolled cache.
+  return forceFresh ? { cache: "no-store" } : { next: { revalidate: Math.round(revalidateMs / 1000) } };
+}
+
+async function fetchEventsDirect(forceFresh?: boolean): Promise<RawMovie[]> {
+  const res = await fetchWithTimeout(`${HOST}/api/Events`, {
+    headers: BROWSER_HEADERS,
+    ...cacheInit(forceFresh, EVENTS_CACHE_TTL_MS),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return (await res.json()) as RawMovie[];
+}
+
+async function fetchEventsFromMirror(mirrorUrl: string, forceFresh?: boolean): Promise<RawMovie[]> {
+  const res = await fetchWithTimeout(mirrorUrl, {
+    headers: { Accept: "application/json" },
+    // The mirror only changes once a day (whenever the residential-side
+    // script runs), so an hour-scale revalidate is plenty fresh.
+    ...cacheInit(forceFresh, 1000 * 60 * 60),
+  });
+  if (!res.ok) throw new Error(`mirror HTTP ${res.status}`);
+  return (await res.json()) as RawMovie[];
+}
+
+async function fetchEvents(forceFresh?: boolean): Promise<RawMovie[]> {
+  if (MIRROR_URL) {
+    try {
+      return await fetchEventsFromMirror(MIRROR_URL, forceFresh);
+    } catch (mirrorErr) {
+      // Mirror missing/stale — worth still trying direct in case this
+      // deployment's egress happens to be unblocked (e.g. local dev).
+      try {
+        return await fetchEventsDirect(forceFresh);
+      } catch {
+        throw mirrorErr instanceof Error ? mirrorErr : new Error(String(mirrorErr));
+      }
+    }
+  }
+  return fetchEventsDirect(forceFresh);
+}
+
 export class MovielandProvider implements CinemaDataProvider {
   id = "movieland-live";
   name = "Movieland (live)";
@@ -105,27 +182,7 @@ export class MovielandProvider implements CinemaDataProvider {
 
     let rawMovies: RawMovie[];
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-      try {
-        const res = await fetch(`${HOST}/api/Events`, {
-          signal: controller.signal,
-          headers: {
-            Accept: "application/json",
-            "User-Agent": USER_AGENT,
-            "Accept-Language": "he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7",
-            Referer: `${HOST}/`,
-          },
-          // Next.js's own fetch-level Data Cache (persisted by the platform —
-          // Vercel — across serverless invocations for free) instead of a
-          // hand-rolled cache.
-          ...(forceFresh ? { cache: "no-store" as const } : { next: { revalidate: Math.round(EVENTS_CACHE_TTL_MS / 1000) } }),
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        rawMovies = (await res.json()) as RawMovie[];
-      } finally {
-        clearTimeout(timer);
-      }
+      rawMovies = await fetchEvents(forceFresh);
     } catch (err) {
       errors.push(`Movieland: failed to fetch events (${err instanceof Error ? err.message : String(err)}).`);
       return { dataset: emptyDataset(), warnings, errors };
