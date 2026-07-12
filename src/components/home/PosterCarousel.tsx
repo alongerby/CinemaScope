@@ -21,14 +21,10 @@ const BASE_SPEED = 0.08; // 100 pixels per second
 const EDGE_ZONE = 120;
 const EDGE_MIN_SPEED = 0.12;
 const EDGE_MAX_SPEED = 0.7;
-// Mouse gets a small threshold so a plain click doesn't register as a
-// micro-drag. Touch needs to commit almost immediately: real phones decide
-// "is this a scroll gesture" within the first pixel or two of movement, so
-// waiting for 6px before taking over from the browser routinely loses that
-// race — the swipe just does nothing, which reads as "the carousel doesn't
-// work with a finger."
+// Small threshold so a plain mouse click doesn't register as a micro-drag.
+// Touch never goes through this path at all — see the touch handling note
+// further down for why.
 const DRAG_THRESHOLD = 6;
-const TOUCH_DRAG_THRESHOLD = 2;
 
 // Ensures each copy is wider than most screens, even when there are only
 // a few movies. This prevents blank space at either end of the carousel.
@@ -61,9 +57,19 @@ export function PosterCarousel({ movies }: { movies: Movie[] }) {
   const potentialDragRef = useRef(false);
   const justDraggedRef = useRef(false);
   const dragStartXRef = useRef(0);
-  const dragStartYRef = useRef(0);
   const dragStartScrollRef = useRef(0);
   const pointerIdRef = useRef<number | null>(null);
+
+  // Touch is deliberately NOT driven through the mouse-style drag simulation
+  // below — real phones commit to "is this a scroll gesture" within the
+  // first pixel or two of movement, faster than any JS threshold can react,
+  // so custom touch dragging routinely loses that race and just does
+  // nothing. Instead, touch uses the browser's own native horizontal scroll
+  // (the track is a real `overflow-x-auto` element), which handles the
+  // gesture-vs-page-scroll disambiguation far more robustly than we can from
+  // script. This ref only tracks "is a finger down right now" so autoplay
+  // pauses while a touch is in progress and resumes once it lifts.
+  const isTouchingRef = useRef(false);
 
   const posterHoveredRef = useRef(false);
   const posterFocusedRef = useRef(false);
@@ -244,9 +250,16 @@ export function PosterCarousel({ movies }: { movies: Movie[] }) {
    * One animation loop controls both autoplay and edge scrolling.
    *
    * Priority:
-   * 1. Dragging
+   * 1. Mouse dragging (draggingRef) — script owns scrollLeft entirely
    * 2. Pointer edge scrolling
-   * 3. Autoplay
+   * 3. Autoplay (paused while hovered/focused/touched)
+   *
+   * wrapScrollPosition() runs unconditionally every frame, regardless of
+   * which of the above moved scrollLeft — including native touch scrolling,
+   * which changes scrollLeft directly without going through any of our
+   * handlers at all. Without this, the seamless-loop illusion would only be
+   * maintained while autoplay/edge-scroll/mouse-drag were active, and a
+   * touch-scrolled position could drift outside the safe middle-copy range.
    */
   useEffect(() => {
     let active = true;
@@ -264,26 +277,24 @@ export function PosterCarousel({ movies }: { movies: Movie[] }) {
 
       lastFrameTimeRef.current = currentTime;
 
-      if (
-        track &&
-        initializedRef.current &&
-        loopWidthRef.current > 0 &&
-        !draggingRef.current
-      ) {
-        if (edgeDirectionRef.current !== 0) {
-          track.scrollLeft +=
-            edgeDirectionRef.current * edgeSpeedRef.current * deltaTime;
+      if (track && initializedRef.current && loopWidthRef.current > 0) {
+        if (!draggingRef.current) {
+          if (edgeDirectionRef.current !== 0) {
+            track.scrollLeft +=
+              edgeDirectionRef.current * edgeSpeedRef.current * deltaTime;
+          } else {
+            const interactionPaused =
+              posterHoveredRef.current ||
+              posterFocusedRef.current ||
+              isTouchingRef.current;
 
-          wrapScrollPosition();
-        } else {
-          const interactionPaused =
-            posterHoveredRef.current || posterFocusedRef.current;
-
-          if (autoplayEnabledRef.current && !interactionPaused) {
-            track.scrollLeft += BASE_SPEED * deltaTime;
-            wrapScrollPosition();
+            if (autoplayEnabledRef.current && !interactionPaused) {
+              track.scrollLeft += BASE_SPEED * deltaTime;
+            }
           }
         }
+
+        wrapScrollPosition();
       }
 
       animationFrameRef.current = requestAnimationFrame(animate);
@@ -299,6 +310,13 @@ export function PosterCarousel({ movies }: { movies: Movie[] }) {
   }, [wrapScrollPosition]);
 
   const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    // Touch: don't simulate anything — let the browser's native scroll
+    // handle the drag. Just remember a finger is down, so autoplay pauses.
+    if (event.pointerType === "touch") {
+      isTouchingRef.current = true;
+      return;
+    }
+
     if (event.pointerType === "mouse" && event.button !== 0) {
       return;
     }
@@ -310,7 +328,6 @@ export function PosterCarousel({ movies }: { movies: Movie[] }) {
     justDraggedRef.current = false;
 
     dragStartXRef.current = event.clientX;
-    dragStartYRef.current = event.clientY;
     dragStartScrollRef.current = track?.scrollLeft ?? 0;
     pointerIdRef.current = event.pointerId;
 
@@ -319,6 +336,12 @@ export function PosterCarousel({ movies }: { movies: Movie[] }) {
   };
 
   const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    // Touch never reaches the drag-simulation or edge-scroll logic below —
+    // native scrolling owns it entirely.
+    if (event.pointerType === "touch") {
+      return;
+    }
+
     const track = trackRef.current;
 
     if (!track) {
@@ -330,13 +353,8 @@ export function PosterCarousel({ movies }: { movies: Movie[] }) {
 
     if (potentialDragRef.current || draggingRef.current) {
       const dragDistance = event.clientX - dragStartXRef.current;
-      const verticalDistance = event.clientY - dragStartYRef.current;
-      const threshold = event.pointerType === "touch" ? TOUCH_DRAG_THRESHOLD : DRAG_THRESHOLD;
 
-      // Direction-aware: only commit to a horizontal drag once movement is
-      // both past the threshold AND more horizontal than vertical, so a
-      // genuinely vertical swipe (scrolling the page) is never hijacked.
-      if (!draggingRef.current && Math.abs(dragDistance) > threshold && Math.abs(dragDistance) >= Math.abs(verticalDistance)) {
+      if (!draggingRef.current && Math.abs(dragDistance) > DRAG_THRESHOLD) {
         draggingRef.current = true;
 
         try {
@@ -354,13 +372,6 @@ export function PosterCarousel({ movies }: { movies: Movie[] }) {
         wrapScrollPosition();
         return;
       }
-    }
-
-    // Edge scrolling is intended for a mouse or stylus, not touch.
-    if (event.pointerType === "touch") {
-      edgeDirectionRef.current = 0;
-      edgeSpeedRef.current = 0;
-      return;
     }
 
     if (relativeX < EDGE_ZONE) {
@@ -391,7 +402,12 @@ export function PosterCarousel({ movies }: { movies: Movie[] }) {
     }
   };
 
-  const endDrag = () => {
+  const endDrag = (event?: ReactPointerEvent<HTMLDivElement>) => {
+    if (event?.pointerType === "touch") {
+      isTouchingRef.current = false;
+      return;
+    }
+
     const track = trackRef.current;
     const pointerId = pointerIdRef.current;
     const wasDragging = draggingRef.current;
@@ -418,12 +434,14 @@ export function PosterCarousel({ movies }: { movies: Movie[] }) {
     }
   };
 
-  const handlePointerLeave = () => {
-    endDrag();
+  const handlePointerLeave = (event: ReactPointerEvent<HTMLDivElement>) => {
+    endDrag(event);
 
-    posterHoveredRef.current = false;
-    edgeDirectionRef.current = 0;
-    edgeSpeedRef.current = 0;
+    if (event.pointerType !== "touch") {
+      posterHoveredRef.current = false;
+      edgeDirectionRef.current = 0;
+      edgeSpeedRef.current = 0;
+    }
   };
 
   const handleClickCapture = (event: ReactMouseEvent<HTMLDivElement>) => {
@@ -560,9 +578,22 @@ export function PosterCarousel({ movies }: { movies: Movie[] }) {
         onPointerCancel={endDrag}
         onPointerLeave={handlePointerLeave}
         onClickCapture={handleClickCapture}
-        className="cursor-grab select-none overflow-x-auto overflow-y-hidden py-7 active:cursor-grabbing [mask-image:linear-gradient(to_right,transparent,black_5%,black_95%,transparent)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        // overflow-y-auto (not -hidden): visually identical since there's no
+        // actual vertical overflow inside the py-7 padding, but "hidden"
+        // tells the browser this element categorically has no scrollable
+        // region on that axis — which blocks touch scroll-chaining to the
+        // page entirely. "auto" is still a real (empty) scroll container, so
+        // a vertical swipe correctly falls through to scroll the page.
+        className="cursor-grab select-none overflow-x-auto overflow-y-auto py-7 active:cursor-grabbing [mask-image:linear-gradient(to_right,transparent,black_5%,black_95%,transparent)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         style={{
-          touchAction: "pan-y",
+          // "auto" (not "pan-y") — this lets the browser's own native touch
+          // scrolling handle horizontal drags on this element directly,
+          // instead of us fighting it with JS. The browser disambiguates a
+          // horizontal swipe (scrolls this track) from a vertical one
+          // (scrolls the page) using its own gesture recognition, which is
+          // faster and far more reliable than anything achievable from a
+          // pointermove handler.
+          touchAction: "auto",
           WebkitOverflowScrolling: "touch",
         }}
       >

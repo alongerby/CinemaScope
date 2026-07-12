@@ -163,7 +163,11 @@ export function MovieDetailClient({ movie, screenings, theaters }: { movie: Movi
 
           {/* Results grouped by theater */}
           <div className="flex flex-col gap-4">
-            <div className="sticky-filter-bar -mx-4 border-b border-sand-200 bg-sand-50/90 px-4 py-3 backdrop-blur sm:mx-0 sm:rounded-2xl sm:border sm:px-4">
+            {/* Not sticky: with the day chips able to expand (see DayPicker),
+                a sticky element that changes height while pinned is a classic
+                source of mobile-browser rendering glitches (content jumping
+                or seeming to vanish behind the pinned box). */}
+            <div className="-mx-4 border-b border-sand-200 bg-sand-50/90 px-4 py-3 backdrop-blur sm:mx-0 sm:rounded-2xl sm:border sm:px-4">
               <DayPicker dates={availableDates} selected={dates} onToggle={toggleDate} />
             </div>
 

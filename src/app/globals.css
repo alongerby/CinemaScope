@@ -45,12 +45,6 @@ h1, h2, h3 {
   @apply ring-2 ring-brand-500 ring-offset-2 ring-offset-white;
 }
 
-.sticky-filter-bar {
-  position: sticky;
-  top: 0;
-  z-index: 30;
-}
-
 .scrollbar-hide {
   scrollbar-width: none;
   -ms-overflow-style: none;
