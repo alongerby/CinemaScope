@@ -12,6 +12,7 @@ import { TheaterPicker } from "@/components/TheaterPicker";
 import { FavoritesOnlyButton } from "@/components/FavoritesOnlyButton";
 import { EmptyState } from "@/components/states/EmptyState";
 import { MoviePoster } from "@/components/MoviePoster";
+import { SpecialFilter, matchesSpecialFilters, type SpecialFilterKey } from "@/components/SpecialFilter";
 
 function dayLabel(dateStr: string, locale: "en" | "he"): string {
   const { weekday, day } = formatDayParts(dateStr, locale);
@@ -42,6 +43,7 @@ export function MovieDetailClient({ movie, screenings, theaters }: { movie: Movi
   const { locale, t } = useLanguage();
   const [dates, setDates] = useState<string[]>([]);
   const [theaterIds, setTheaterIds] = useState<string[]>([]);
+  const [special, setSpecial] = useState<SpecialFilterKey[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
 
   const { primary: title, secondary: titleAlt } = movieTitles(locale, movie);
@@ -60,8 +62,12 @@ export function MovieDetailClient({ movie, screenings, theaters }: { movie: Movi
 
   const toggleDate = (d: string) => setDates((prev) => (prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d]));
   const toggleTheater = (id: string) => setTheaterIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  const toggleSpecial = (key: SpecialFilterKey) => setSpecial((prev) => (prev.includes(key) ? prev.filter((x) => x !== key) : [...prev, key]));
 
-  const filtered = useMemo(() => sortByTime(applyFilters(enriched, { dates, theaterIds })), [enriched, dates, theaterIds]);
+  const filtered = useMemo(
+    () => sortByTime(applyFilters(enriched, { dates, theaterIds })).filter((s) => matchesSpecialFilters(s, special)),
+    [enriched, dates, theaterIds, special],
+  );
 
   // Group by place (theater) → then by day, ordered by city then theater name.
   const byTheater = useMemo(() => {
@@ -143,6 +149,9 @@ export function MovieDetailClient({ movie, screenings, theaters }: { movie: Movi
           {/* Filters */}
           <div className="flex flex-col gap-4">
             <FavoritesOnlyButton theaters={movieTheaters} selected={theaterIds} onChange={setTheaterIds} />
+            <div className="card-surface p-4">
+              <SpecialFilter selected={special} onToggle={toggleSpecial} />
+            </div>
             <button type="button" onClick={() => setPickerOpen((v) => !v)} className="btn-secondary justify-between lg:hidden">
               <span className="truncate text-start">🎬 {t("filters.theaters")}{theaterIds.length ? ` (${theaterIds.length})` : ""}</span>
               <span aria-hidden>{pickerOpen ? "▲" : "▼"}</span>

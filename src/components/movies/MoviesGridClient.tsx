@@ -23,15 +23,16 @@ export function MoviesGridClient({ movies, theaters, screenings }: { movies: Mov
   const { t, locale } = useLanguage();
   const router = useRouter();
   const searchParams = useSearchParams();
-  // The page number lives in the URL (?page=N) so a specific page is
-  // shareable/bookmarkable and survives a refresh or the back button — a path
-  // segment like /movies/2 was the other option, but that would collide with
-  // /movies/[id] (movie detail pages use ids like "mv-xxxx", but the route
-  // itself can't tell "2" apart from a real id without checking data first).
-  const [page, setPage] = useState(() => {
-    const raw = Number(searchParams.get("page"));
-    return Number.isInteger(raw) && raw > 0 ? raw : 1;
-  });
+  // The page number lives in the URL (?page=N) — derived fresh from
+  // searchParams every render rather than mirrored into its own useState, so
+  // there's no separate state to fall out of sync: the browser back/forward
+  // buttons change searchParams directly, and this just follows along. A
+  // path segment like /movies/2 was the other option, but that would
+  // collide with /movies/[id] (movie detail pages use ids like "mv-xxxx",
+  // but the route itself can't tell "2" apart from a real id without
+  // checking data first).
+  const rawPage = Number(searchParams.get("page"));
+  const page = Number.isInteger(rawPage) && rawPage > 0 ? rawPage : 1;
 
   const [theaterIds, setTheaterIds] = useState<string[]>(() => {
     const raw = searchParams.get("theaters");
@@ -48,15 +49,27 @@ export function MoviesGridClient({ movies, theaters, screenings }: { movies: Mov
   const [query, setQuery] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
 
+  // Syncs the filter state to the URL (replace — filter tweaks shouldn't
+  // clutter browser history). Deliberately keeps whatever page is currently
+  // in the URL UNLESS the filters just changed (compared against their
+  // previous values, so this is a no-op on mount and under React
+  // StrictMode's dev-only double effect invocation) — a filter change drops
+  // back to page 1 by omitting the param entirely.
+  const prevFiltersRef = useRef({ theaterIds, dates, special, query });
   useEffect(() => {
+    const prev = prevFiltersRef.current;
+    const filtersChanged = prev.theaterIds !== theaterIds || prev.dates !== dates || prev.special !== special || prev.query !== query;
+    prevFiltersRef.current = { theaterIds, dates, special, query };
+
     const params = new URLSearchParams();
     if (theaterIds.length) params.set("theaters", theaterIds.join(","));
     if (dates.length) params.set("dates", dates.join(","));
     if (special.length) params.set("special", special.join(","));
-    if (page > 1) params.set("page", String(page));
+    if (!filtersChanged && page > 1) params.set("page", String(page));
     const q = params.toString();
     router.replace(q ? `/movies?${q}` : "/movies", { scroll: false });
-  }, [theaterIds, dates, special, page, router]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `page` read intentionally without being a dep, see comment above
+  }, [theaterIds, dates, special, query, router]);
 
   const availableDates = useMemo(() => Array.from(new Set(screenings.map((s) => s.date))).sort(), [screenings]);
 
@@ -95,26 +108,23 @@ export function MoviesGridClient({ movies, theaters, screenings }: { movies: Mov
     });
   }, [movies, query, matchingMovieIds, locale]);
 
-  // Reset to page 1 whenever the filtered set changes shape. Compares
-  // against the previous values rather than a "first run" flag, so it's a
-  // no-op both on mount (a direct link to ?page=3 shouldn't get stomped back
-  // to page 1) and under React StrictMode's dev-only double effect
-  // invocation (which would otherwise defeat a simple mount flag).
-  const prevFiltersRef = useRef({ theaterIds, dates, special, query });
-  useEffect(() => {
-    const prev = prevFiltersRef.current;
-    const changed = prev.theaterIds !== theaterIds || prev.dates !== dates || prev.special !== special || prev.query !== query;
-    prevFiltersRef.current = { theaterIds, dates, special, query };
-    if (changed) setPage(1);
-  }, [theaterIds, dates, special, query]);
-
   const totalPages = Math.max(1, Math.ceil(filtered.length / MOVIES_PER_PAGE));
   const currentPage = Math.min(page, totalPages);
   const pageStart = (currentPage - 1) * MOVIES_PER_PAGE;
   const paged = filtered.slice(pageStart, pageStart + MOVIES_PER_PAGE);
 
+  // Uses push (not replace) so each page visited becomes its own browser
+  // history entry — pressing back steps back through pages one at a time,
+  // instead of skipping past the whole search/movies session.
   const goToPage = (p: number) => {
-    setPage(Math.min(Math.max(1, p), totalPages));
+    const clamped = Math.min(Math.max(1, p), totalPages);
+    const params = new URLSearchParams();
+    if (theaterIds.length) params.set("theaters", theaterIds.join(","));
+    if (dates.length) params.set("dates", dates.join(","));
+    if (special.length) params.set("special", special.join(","));
+    if (clamped > 1) params.set("page", String(clamped));
+    const q = params.toString();
+    router.push(q ? `/movies?${q}` : "/movies", { scroll: false });
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 

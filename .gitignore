@@ -5,3 +5,5 @@ out
 *.log
 .DS_Store
 .env.local
+# Contains a real GitHub token once filled in — never commit it.
+scripts/scrapeAll.bat

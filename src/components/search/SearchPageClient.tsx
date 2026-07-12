@@ -32,12 +32,12 @@ export function SearchPageClient({
   const { locale, t } = useLanguage();
   const router = useRouter();
   const searchParams = useSearchParams();
-  // The page number lives in the URL (?page=N) so a specific page is
-  // shareable/bookmarkable and survives a refresh or the back button.
-  const [page, setPage] = useState(() => {
-    const raw = Number(searchParams.get("page"));
-    return Number.isInteger(raw) && raw > 0 ? raw : 1;
-  });
+  // The page number lives in the URL (?page=N) — derived fresh from
+  // searchParams every render rather than mirrored into its own useState, so
+  // there's no separate state to fall out of sync: the browser back/forward
+  // buttons change searchParams directly, and this just follows along.
+  const rawPage = Number(searchParams.get("page"));
+  const page = Number.isInteger(rawPage) && rawPage > 0 ? rawPage : 1;
 
   const [theaterIds, setTheaterIds] = useState<string[]>(() => {
     const raw = searchParams.get("theaters");
@@ -52,15 +52,27 @@ export function SearchPageClient({
   );
   const [pickerOpen, setPickerOpen] = useState(false);
 
+  // Syncs the filter state to the URL (replace — filter tweaks shouldn't
+  // clutter browser history). Deliberately keeps whatever page is currently
+  // in the URL UNLESS the filters just changed (compared against their
+  // previous values, so this is a no-op on mount and under React
+  // StrictMode's dev-only double effect invocation) — a filter change drops
+  // back to page 1 by omitting the param entirely.
+  const prevFiltersRef = useRef({ theaterIds, dates, movieId });
   useEffect(() => {
+    const prev = prevFiltersRef.current;
+    const filtersChanged = prev.theaterIds !== theaterIds || prev.dates !== dates || prev.movieId !== movieId;
+    prevFiltersRef.current = { theaterIds, dates, movieId };
+
     const params = new URLSearchParams();
     if (theaterIds.length) params.set("theaters", theaterIds.join(","));
     if (dates.length) params.set("dates", dates.join(","));
     if (movieId) params.set("movie", movieId);
-    if (page > 1) params.set("page", String(page));
+    if (!filtersChanged && page > 1) params.set("page", String(page));
     const q = params.toString();
     router.replace(q ? `/search?${q}` : "/search", { scroll: false });
-  }, [theaterIds, dates, movieId, page, router]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `page` read intentionally without being a dep, see comment above
+  }, [theaterIds, dates, movieId, router]);
 
   const availableDates = useMemo(
     () => Array.from(new Set(screenings.map((s) => s.date))).sort(),
@@ -124,20 +136,6 @@ export function SearchPageClient({
     [results, locale],
   );
 
-  // Reset to page 1 whenever the filtered result set changes shape, so we
-  // never land on a page that no longer exists (e.g. after clearing a
-  // filter). Compares against the previous values rather than a "first run"
-  // flag, so it's a no-op both on mount (a direct link to ?page=3 shouldn't
-  // get stomped back to page 1) and under React StrictMode's dev-only double
-  // effect invocation (which would otherwise defeat a simple mount flag).
-  const prevFiltersRef = useRef({ theaterIds, dates, movieId });
-  useEffect(() => {
-    const prev = prevFiltersRef.current;
-    const changed = prev.theaterIds !== theaterIds || prev.dates !== dates || prev.movieId !== movieId;
-    prevFiltersRef.current = { theaterIds, dates, movieId };
-    if (changed) setPage(1);
-  }, [theaterIds, dates, movieId]);
-
   const totalPages = Math.max(
     1,
     Math.ceil(orderedResults.length / SCREENINGS_PER_PAGE),
@@ -153,8 +151,18 @@ export function SearchPageClient({
     [pagedResults, locale],
   );
 
+  // Uses push (not replace) so each page visited becomes its own browser
+  // history entry — pressing back steps back through pages one at a time,
+  // instead of skipping past the whole search session.
   const goToPage = (p: number) => {
-    setPage(Math.min(Math.max(1, p), totalPages));
+    const clamped = Math.min(Math.max(1, p), totalPages);
+    const params = new URLSearchParams();
+    if (theaterIds.length) params.set("theaters", theaterIds.join(","));
+    if (dates.length) params.set("dates", dates.join(","));
+    if (movieId) params.set("movie", movieId);
+    if (clamped > 1) params.set("page", String(clamped));
+    const q = params.toString();
+    router.push(q ? `/search?${q}` : "/search", { scroll: false });
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
