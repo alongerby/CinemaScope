@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import { movieTitles } from "@/lib/i18n/localize";
@@ -10,6 +10,7 @@ import { TheaterPicker } from "@/components/TheaterPicker";
 import { FavoritesOnlyButton } from "@/components/FavoritesOnlyButton";
 import { MovieCard } from "@/components/MovieCard";
 import { EmptyState } from "@/components/states/EmptyState";
+import { SpecialFilter, matchesSpecialFilters, type SpecialFilterKey } from "@/components/SpecialFilter";
 
 const MOVIES_PER_PAGE = 24;
 
@@ -22,7 +23,15 @@ export function MoviesGridClient({ movies, theaters, screenings }: { movies: Mov
   const { t, locale } = useLanguage();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [page, setPage] = useState(1);
+  // The page number lives in the URL (?page=N) so a specific page is
+  // shareable/bookmarkable and survives a refresh or the back button — a path
+  // segment like /movies/2 was the other option, but that would collide with
+  // /movies/[id] (movie detail pages use ids like "mv-xxxx", but the route
+  // itself can't tell "2" apart from a real id without checking data first).
+  const [page, setPage] = useState(() => {
+    const raw = Number(searchParams.get("page"));
+    return Number.isInteger(raw) && raw > 0 ? raw : 1;
+  });
 
   const [theaterIds, setTheaterIds] = useState<string[]>(() => {
     const raw = searchParams.get("theaters");
@@ -32,6 +41,10 @@ export function MoviesGridClient({ movies, theaters, screenings }: { movies: Mov
     const raw = searchParams.get("dates");
     return raw ? raw.split(",").filter(Boolean) : [];
   });
+  const [special, setSpecial] = useState<SpecialFilterKey[]>(() => {
+    const raw = searchParams.get("special");
+    return raw ? (raw.split(",").filter(Boolean) as SpecialFilterKey[]) : [];
+  });
   const [query, setQuery] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
 
@@ -39,26 +52,30 @@ export function MoviesGridClient({ movies, theaters, screenings }: { movies: Mov
     const params = new URLSearchParams();
     if (theaterIds.length) params.set("theaters", theaterIds.join(","));
     if (dates.length) params.set("dates", dates.join(","));
+    if (special.length) params.set("special", special.join(","));
+    if (page > 1) params.set("page", String(page));
     const q = params.toString();
     router.replace(q ? `/movies?${q}` : "/movies", { scroll: false });
-  }, [theaterIds, dates, router]);
+  }, [theaterIds, dates, special, page, router]);
 
   const availableDates = useMemo(() => Array.from(new Set(screenings.map((s) => s.date))).sort(), [screenings]);
 
   const toggleTheater = (id: string) => setTheaterIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   const toggleDate = (d: string) => setDates((prev) => (prev.includes(d) ? prev.filter((x) => x !== d) : [...prev, d]));
+  const toggleSpecial = (key: SpecialFilterKey) => setSpecial((prev) => (prev.includes(key) ? prev.filter((x) => x !== key) : [...prev, key]));
 
-  // Which movies have a screening matching the current theater/day selection.
+  // Which movies have a screening matching the current theater/day/special selection.
   const matchingMovieIds = useMemo(() => {
-    if (theaterIds.length === 0 && dates.length === 0) return null; // no filter active
+    if (theaterIds.length === 0 && dates.length === 0 && special.length === 0) return null; // no filter active
     const ids = new Set<string>();
     for (const s of screenings) {
       if (theaterIds.length > 0 && !theaterIds.includes(s.theaterId)) continue;
       if (dates.length > 0 && !dates.includes(s.date)) continue;
+      if (!matchesSpecialFilters(s, special)) continue;
       ids.add(s.movieId);
     }
     return ids;
-  }, [screenings, theaterIds, dates]);
+  }, [screenings, theaterIds, dates, special]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -78,10 +95,18 @@ export function MoviesGridClient({ movies, theaters, screenings }: { movies: Mov
     });
   }, [movies, query, matchingMovieIds, locale]);
 
-  // Reset to page 1 whenever the filtered set changes shape.
+  // Reset to page 1 whenever the filtered set changes shape. Compares
+  // against the previous values rather than a "first run" flag, so it's a
+  // no-op both on mount (a direct link to ?page=3 shouldn't get stomped back
+  // to page 1) and under React StrictMode's dev-only double effect
+  // invocation (which would otherwise defeat a simple mount flag).
+  const prevFiltersRef = useRef({ theaterIds, dates, special, query });
   useEffect(() => {
-    setPage(1);
-  }, [theaterIds, dates, query]);
+    const prev = prevFiltersRef.current;
+    const changed = prev.theaterIds !== theaterIds || prev.dates !== dates || prev.special !== special || prev.query !== query;
+    prevFiltersRef.current = { theaterIds, dates, special, query };
+    if (changed) setPage(1);
+  }, [theaterIds, dates, special, query]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / MOVIES_PER_PAGE));
   const currentPage = Math.min(page, totalPages);
@@ -115,6 +140,10 @@ export function MoviesGridClient({ movies, theaters, screenings }: { movies: Mov
           </label>
 
           <FavoritesOnlyButton theaters={theaters} selected={theaterIds} onChange={setTheaterIds} />
+
+          <div className="card-surface p-4">
+            <SpecialFilter selected={special} onToggle={toggleSpecial} />
+          </div>
 
           <button type="button" onClick={() => setPickerOpen((v) => !v)} className="btn-secondary justify-between lg:hidden">
             <span className="truncate text-start">🎬 {t("filters.theaters")}{theaterIds.length ? ` (${theaterIds.length})` : ""}</span>

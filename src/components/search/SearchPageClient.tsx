@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useLanguage } from "@/lib/i18n/LanguageProvider";
 import { pick, movieTitles } from "@/lib/i18n/localize";
@@ -32,7 +32,12 @@ export function SearchPageClient({
   const { locale, t } = useLanguage();
   const router = useRouter();
   const searchParams = useSearchParams();
-  const [page, setPage] = useState(1);
+  // The page number lives in the URL (?page=N) so a specific page is
+  // shareable/bookmarkable and survives a refresh or the back button.
+  const [page, setPage] = useState(() => {
+    const raw = Number(searchParams.get("page"));
+    return Number.isInteger(raw) && raw > 0 ? raw : 1;
+  });
 
   const [theaterIds, setTheaterIds] = useState<string[]>(() => {
     const raw = searchParams.get("theaters");
@@ -52,9 +57,10 @@ export function SearchPageClient({
     if (theaterIds.length) params.set("theaters", theaterIds.join(","));
     if (dates.length) params.set("dates", dates.join(","));
     if (movieId) params.set("movie", movieId);
+    if (page > 1) params.set("page", String(page));
     const q = params.toString();
     router.replace(q ? `/search?${q}` : "/search", { scroll: false });
-  }, [theaterIds, dates, movieId, router]);
+  }, [theaterIds, dates, movieId, page, router]);
 
   const availableDates = useMemo(
     () => Array.from(new Set(screenings.map((s) => s.date))).sort(),
@@ -119,9 +125,17 @@ export function SearchPageClient({
   );
 
   // Reset to page 1 whenever the filtered result set changes shape, so we
-  // never land on a page that no longer exists (e.g. after clearing a filter).
+  // never land on a page that no longer exists (e.g. after clearing a
+  // filter). Compares against the previous values rather than a "first run"
+  // flag, so it's a no-op both on mount (a direct link to ?page=3 shouldn't
+  // get stomped back to page 1) and under React StrictMode's dev-only double
+  // effect invocation (which would otherwise defeat a simple mount flag).
+  const prevFiltersRef = useRef({ theaterIds, dates, movieId });
   useEffect(() => {
-    setPage(1);
+    const prev = prevFiltersRef.current;
+    const changed = prev.theaterIds !== theaterIds || prev.dates !== dates || prev.movieId !== movieId;
+    prevFiltersRef.current = { theaterIds, dates, movieId };
+    if (changed) setPage(1);
   }, [theaterIds, dates, movieId]);
 
   const totalPages = Math.max(

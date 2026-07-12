@@ -74,17 +74,19 @@ Its events endpoint doesn't expose branch coordinates or a machine-readable city
 - `src/app/api/cron/refresh/route.ts` is the production-correct trigger: point any external scheduler at it once a day (`POST /api/cron/refresh`) — Windows Task Scheduler, cron, or a hosted scheduled job all work identically. Set `CRON_SECRET` in the environment to require `Authorization: Bearer <secret>` (or `?secret=`) before it'll run; unset by default so local use needs no configuration.
 - `/admin/import`'s "Refresh data now" button bypasses the cache immediately (`forceFresh`, threaded through every provider), for on-demand testing.
 
-## Movieland mirror (working around a Cloudflare IP-reputation gate)
+## Dataset mirror (working around per-chain bot-protection, and making prod fast)
 
-Movieland's `/api/Events` sits behind a Cloudflare Managed Challenge that gates almost entirely on IP/ASN reputation — cloud hosting ranges (Vercel, Netlify, etc.) get challenged/blocked no matter what headers are sent, while a residential IP passes straight through untouched. No amount of header spoofing or proxy relaying fixes an IP-reputation gate, so instead: a residential machine mirrors the raw response to a GitHub Gist once a day, and the deployed site reads that mirror instead of talking to Movieland directly.
+Movieland's `/api/Events` sits behind a Cloudflare Managed Challenge that gates almost entirely on IP/ASN reputation — cloud hosting ranges (Vercel, Netlify, etc.) get challenged/blocked no matter what headers are sent, while a residential IP passes straight through untouched. No amount of header spoofing or proxy relaying fixes an IP-reputation gate. Rather than solving that per-chain, **`scripts/scrapeAll.ts` runs the entire ingestion pipeline (all 5 chains) from a trusted residential network and mirrors the merged result to a GitHub Gist** — the deployed app then just reads that one JSON file instead of talking to any chain directly. That sidesteps Movieland's block specifically, and also means production never pays for a live multi-chain scrape on a cold request: it's just one fast fetch of a static file.
 
 Setup:
 1. Create a GitHub Personal Access Token with the `gist` scope ([github.com/settings/tokens](https://github.com/settings/tokens)).
-2. Create a Gist with one file `movieland-events.json` containing `[]` as a placeholder. Note its id from the URL.
-3. On the machine that'll run the daily scrape (e.g. your home PC via Windows Task Scheduler), set `MOVIELAND_GIST_ID` and `MOVIELAND_GIST_TOKEN`, then run `node scripts/scrapeMovieland.mjs` (schedule it once a day).
-4. On the deployment (Vercel), set `MOVIELAND_MIRROR_URL` to `https://gist.githubusercontent.com/<user>/<GIST_ID>/raw/movieland-events.json`.
+2. Create a Gist with one file `dataset.json` containing `{}` as a placeholder. Note its id from the URL.
+3. On the machine that'll run the daily scrape (e.g. your home PC via Windows Task Scheduler), set `DATASET_GIST_ID` and `DATASET_GIST_TOKEN`, then run `npm run scrape:all` (schedule it once a day).
+4. On the deployment (Vercel), set `DATASET_MIRROR_URL` to `https://gist.githubusercontent.com/<user>/<GIST_ID>/raw/dataset.json`.
 
-Without `MOVIELAND_MIRROR_URL` set, `movielandProvider.ts` just fetches Movieland directly (fine for local dev, where a residential IP isn't blocked anyway).
+Without `DATASET_MIRROR_URL` set, `repository.ts` runs the live ingestion pipeline itself instead (fine for local dev, where a residential IP isn't blocked anyway).
+
+`scripts/scrapeMovieland.mjs` (mirrors just Movieland's raw feed, via `MOVIELAND_GIST_ID`/`MOVIELAND_GIST_TOKEN`/`MOVIELAND_MIRROR_URL`) still works and is a smaller-scope predecessor to this — `scrapeAll.ts` supersedes it and covers every chain, so there's no need to run both. If you already set up the Movieland-only mirror, `scrapeAll.ts` will happily reuse the same `MOVIELAND_GIST_ID`/`MOVIELAND_GIST_TOKEN` as a fallback if `DATASET_GIST_ID`/`DATASET_GIST_TOKEN` aren't set — no need to create a second Gist or token.
 
 ## Architecture
 

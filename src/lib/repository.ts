@@ -6,18 +6,50 @@ export type { SearchFilters } from "@/lib/searchFilters";
 export { applyFilters, sortByTime } from "@/lib/searchFilters";
 
 /**
- * Single in-memory data layer the whole app reads from. The actual freshness
- * guarantee — "re-scrape each chain every 6-12h, don't hammer it on every
- * request" — lives in each provider's own `fetch()` calls, via Next.js's
- * fetch-level Data Cache (see the `next: { revalidate }` option in each
- * provider). That cache is what Vercel persists across serverless
- * invocations; this module doesn't need its own persisted snapshot on top of
- * it. What's here just avoids redoing the merge/dedupe pass (cheap, and
- * hits no network if the underlying fetches are still within their
- * revalidate window) on every single request within the same warm instance.
+ * Single in-memory data layer the whole app reads from.
+ *
+ * If `DATASET_MIRROR_URL` is set, freshness is someone else's problem: a
+ * trusted residential machine runs the full ingestion pipeline on a schedule
+ * (see scripts/scrapeAll.ts) and publishes the merged result as one JSON
+ * file, and this module just fetches that file instead of ever calling a
+ * provider directly. That's what makes Movieland (and, in general, any
+ * chain's bot-protection/IP-reputation gate) a non-issue in production — the
+ * deployed app never talks to the chains at all.
+ *
+ * Without that env var (e.g. local dev), it falls back to running the live
+ * ingestion pipeline itself, same as before — each provider's own `fetch()`
+ * calls carry Next.js's fetch-level Data Cache (`next: { revalidate }`), so
+ * that path is still reasonably fast on repeat requests.
+ *
+ * Either way, this module keeps a short in-memory reuse window on top, just
+ * to avoid redoing the (cheap) merge/dedupe pass — or an extra mirror fetch —
+ * on every single request within the same warm instance.
  */
 
 const REUSE_WINDOW_MS = 1000 * 60 * 10; // re-merge at most once per 10 minutes per warm instance
+const DATASET_MIRROR_URL = process.env.DATASET_MIRROR_URL;
+const MIRROR_REVALIDATE_MS = 1000 * 60 * 60; // the mirror only changes once a day; an hour-scale revalidate is plenty fresh
+
+interface MirroredDataset {
+  dataset: NormalizedDataset;
+  results: ProviderImportResult[];
+  validationWarnings: string[];
+  generatedAt: string;
+}
+
+function isMirroredDataset(value: unknown): value is MirroredDataset {
+  if (!value || typeof value !== "object") return false;
+  const v = value as Record<string, unknown>;
+  return Boolean(v.dataset && typeof v.dataset === "object" && Array.isArray((v.dataset as NormalizedDataset).movies));
+}
+
+async function fetchMirror(forceFresh?: boolean): Promise<MirroredDataset> {
+  const res = await fetch(DATASET_MIRROR_URL!, forceFresh ? { cache: "no-store" } : { next: { revalidate: Math.round(MIRROR_REVALIDATE_MS / 1000) } });
+  if (!res.ok) throw new Error(`Dataset mirror returned HTTP ${res.status}`);
+  const parsed: unknown = await res.json();
+  if (!isMirroredDataset(parsed)) throw new Error("Dataset mirror returned an unexpected shape");
+  return parsed;
+}
 
 let cachedDataset: NormalizedDataset | null = null;
 let lastResults: ProviderImportResult[] = [];
@@ -31,11 +63,19 @@ async function ensureFresh(options?: { forceFresh?: boolean }): Promise<void> {
   if (inFlight) return inFlight;
 
   inFlight = (async () => {
-    const outcome = await runIngestion(options);
-    cachedDataset = outcome.dataset;
-    lastResults = outcome.results;
-    lastValidationWarnings = outcome.validationWarnings;
-    lastIngestedAt = Date.now();
+    if (DATASET_MIRROR_URL) {
+      const mirrored = await fetchMirror(options?.forceFresh);
+      cachedDataset = mirrored.dataset;
+      lastResults = mirrored.results;
+      lastValidationWarnings = mirrored.validationWarnings;
+      lastIngestedAt = Date.parse(mirrored.generatedAt) || Date.now();
+    } else {
+      const outcome = await runIngestion(options);
+      cachedDataset = outcome.dataset;
+      lastResults = outcome.results;
+      lastValidationWarnings = outcome.validationWarnings;
+      lastIngestedAt = Date.now();
+    }
   })();
 
   try {
@@ -45,7 +85,13 @@ async function ensureFresh(options?: { forceFresh?: boolean }): Promise<void> {
   }
 }
 
-/** Forces an immediate full re-scrape, bypassing every provider's fetch cache too. Used by the admin "Refresh now" button and the cron route. */
+/**
+ * Forces an immediate refresh, bypassing the reuse window. With
+ * `DATASET_MIRROR_URL` set, this re-fetches the mirror (bypassing its cache
+ * too) rather than live-scraping from wherever the app happens to be
+ * deployed — the mirror is the source of truth in that mode. Used by the
+ * admin "Refresh now" button and the cron route.
+ */
 export async function forceRefresh() {
   await ensureFresh({ forceFresh: true });
   return { results: lastResults, warnings: lastValidationWarnings, dataset: cachedDataset! };

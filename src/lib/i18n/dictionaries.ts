@@ -78,6 +78,11 @@ export const dictionaries = {
       russian: "Russian",
       arabic: "Arabic",
       other: "Other",
+      special: "Special",
+      vip: "VIP",
+      threeD: "3D",
+      imax: "IMAX",
+      fourDX: "4DX",
     },
     movieCard: {
       familyFriendly: "Family",
@@ -247,6 +252,11 @@ export const dictionaries = {
       russian: "רוסית",
       arabic: "ערבית",
       other: "אחר",
+      special: "מאפיינים מיוחדים",
+      vip: "VIP",
+      threeD: "תלת מימד",
+      imax: "איימקס",
+      fourDX: "4DX",
     },
     movieCard: {
       familyFriendly: "משפחתי",
