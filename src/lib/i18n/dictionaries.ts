@@ -27,6 +27,8 @@ export const dictionaries = {
       play: "Play",
       pause: "Pause",
       pageOf: "Page {page} of {total}",
+      showMore: "Show more",
+      showLess: "Show less",
     },
     nav: {
       home: "Home",
@@ -201,6 +203,8 @@ export const dictionaries = {
       play: "הפעל",
       pause: "השהה",
       pageOf: "עמוד {page} מתוך {total}",
+      showMore: "הצג עוד",
+      showLess: "הצג פחות",
     },
     nav: {
       home: "בית",

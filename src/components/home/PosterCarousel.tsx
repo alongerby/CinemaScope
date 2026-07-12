@@ -21,7 +21,14 @@ const BASE_SPEED = 0.08; // 100 pixels per second
 const EDGE_ZONE = 120;
 const EDGE_MIN_SPEED = 0.12;
 const EDGE_MAX_SPEED = 0.7;
+// Mouse gets a small threshold so a plain click doesn't register as a
+// micro-drag. Touch needs to commit almost immediately: real phones decide
+// "is this a scroll gesture" within the first pixel or two of movement, so
+// waiting for 6px before taking over from the browser routinely loses that
+// race — the swipe just does nothing, which reads as "the carousel doesn't
+// work with a finger."
 const DRAG_THRESHOLD = 6;
+const TOUCH_DRAG_THRESHOLD = 2;
 
 // Ensures each copy is wider than most screens, even when there are only
 // a few movies. This prevents blank space at either end of the carousel.
@@ -54,6 +61,7 @@ export function PosterCarousel({ movies }: { movies: Movie[] }) {
   const potentialDragRef = useRef(false);
   const justDraggedRef = useRef(false);
   const dragStartXRef = useRef(0);
+  const dragStartYRef = useRef(0);
   const dragStartScrollRef = useRef(0);
   const pointerIdRef = useRef<number | null>(null);
 
@@ -302,6 +310,7 @@ export function PosterCarousel({ movies }: { movies: Movie[] }) {
     justDraggedRef.current = false;
 
     dragStartXRef.current = event.clientX;
+    dragStartYRef.current = event.clientY;
     dragStartScrollRef.current = track?.scrollLeft ?? 0;
     pointerIdRef.current = event.pointerId;
 
@@ -321,8 +330,13 @@ export function PosterCarousel({ movies }: { movies: Movie[] }) {
 
     if (potentialDragRef.current || draggingRef.current) {
       const dragDistance = event.clientX - dragStartXRef.current;
+      const verticalDistance = event.clientY - dragStartYRef.current;
+      const threshold = event.pointerType === "touch" ? TOUCH_DRAG_THRESHOLD : DRAG_THRESHOLD;
 
-      if (!draggingRef.current && Math.abs(dragDistance) > DRAG_THRESHOLD) {
+      // Direction-aware: only commit to a horizontal drag once movement is
+      // both past the threshold AND more horizontal than vertical, so a
+      // genuinely vertical swipe (scrolling the page) is never hijacked.
+      if (!draggingRef.current && Math.abs(dragDistance) > threshold && Math.abs(dragDistance) >= Math.abs(verticalDistance)) {
         draggingRef.current = true;
 
         try {
